@@ -16,9 +16,10 @@ package org.finos.legend.pure.m3.serialization.runtime;
 
 import org.eclipse.collections.api.RichIterable;
 import org.eclipse.collections.api.block.function.Function;
-import org.eclipse.collections.api.block.predicate.Predicate;
 import org.eclipse.collections.api.block.procedure.Procedure;
-import org.eclipse.collections.api.block.procedure.Procedure2;
+import org.eclipse.collections.api.factory.Lists;
+import org.eclipse.collections.api.factory.Maps;
+import org.eclipse.collections.api.factory.Sets;
 import org.eclipse.collections.api.list.ListIterable;
 import org.eclipse.collections.api.list.MutableList;
 import org.eclipse.collections.api.map.MapIterable;
@@ -26,27 +27,23 @@ import org.eclipse.collections.api.map.MutableMap;
 import org.eclipse.collections.api.multimap.list.MutableListMultimap;
 import org.eclipse.collections.api.set.MutableSet;
 import org.eclipse.collections.api.set.SetIterable;
-import org.eclipse.collections.impl.factory.Lists;
-import org.eclipse.collections.impl.factory.Maps;
 import org.eclipse.collections.impl.factory.Multimaps;
-import org.eclipse.collections.impl.factory.Sets;
-import org.eclipse.collections.impl.list.mutable.FastList;
 import org.eclipse.collections.impl.utility.LazyIterate;
-import org.finos.legend.pure.m3.navigation.M3Paths;
-import org.finos.legend.pure.m3.navigation.M3Properties;
-import org.finos.legend.pure.m3.navigation.M3PropertyPaths;
 import org.finos.legend.pure.m3.compiler.Context;
-import org.finos.legend.pure.m3.navigation.Instance;
 import org.finos.legend.pure.m3.compiler.postprocessing.GenericTypeTraceability;
 import org.finos.legend.pure.m3.compiler.postprocessing.SpecializationProcessor;
 import org.finos.legend.pure.m3.compiler.postprocessing.processor.AnnotatedElementProcessor;
 import org.finos.legend.pure.m3.compiler.postprocessing.processor.Processor;
+import org.finos.legend.pure.m3.coreinstance.meta.pure.metamodel.function.FunctionDefinition;
+import org.finos.legend.pure.m3.navigation.Instance;
+import org.finos.legend.pure.m3.navigation.M3Paths;
+import org.finos.legend.pure.m3.navigation.M3ProcessorSupport;
+import org.finos.legend.pure.m3.navigation.M3Properties;
+import org.finos.legend.pure.m3.navigation.M3PropertyPaths;
 import org.finos.legend.pure.m3.navigation.PackageableElement.PackageableElement;
+import org.finos.legend.pure.m3.navigation.ProcessorSupport;
 import org.finos.legend.pure.m3.navigation.property.Property;
 import org.finos.legend.pure.m3.navigation.type.Type;
-import org.finos.legend.pure.m3.coreinstance.meta.pure.metamodel.function.FunctionDefinition;
-import org.finos.legend.pure.m3.navigation.M3ProcessorSupport;
-import org.finos.legend.pure.m3.navigation.ProcessorSupport;
 import org.finos.legend.pure.m3.serialization.filesystem.usercodestorage.CodeStorageTools;
 import org.finos.legend.pure.m3.serialization.grammar.Parser;
 import org.finos.legend.pure.m3.serialization.grammar.ParserLibrary;
@@ -55,8 +52,10 @@ import org.finos.legend.pure.m3.serialization.grammar.m3parser.inlinedsl.InlineD
 import org.finos.legend.pure.m3.serialization.runtime.binary.BinaryModelSourceDeserializer;
 import org.finos.legend.pure.m3.serialization.runtime.binary.DeserializationNode;
 import org.finos.legend.pure.m3.serialization.runtime.binary.DeserializationNode.ReferenceResolutionResult;
+import org.finos.legend.pure.m3.serialization.runtime.binary.PureRepositoryJar;
 import org.finos.legend.pure.m3.serialization.runtime.binary.PureRepositoryJarLibrary;
 import org.finos.legend.pure.m3.serialization.runtime.binary.PureRepositoryJarTools;
+import org.finos.legend.pure.m3.serialization.runtime.binary.PureRepositoryJars;
 import org.finos.legend.pure.m3.serialization.runtime.binary.SourceDeserializationResult;
 import org.finos.legend.pure.m3.serialization.runtime.binary.reference.CachedReferenceFactory;
 import org.finos.legend.pure.m3.serialization.runtime.binary.reference.ExternalReferenceSerializerLibrary;
@@ -65,11 +64,12 @@ import org.finos.legend.pure.m3.serialization.runtime.binary.reference.Reference
 import org.finos.legend.pure.m3.serialization.runtime.binary.reference.SimpleReferenceFactory;
 import org.finos.legend.pure.m3.serialization.runtime.pattern.URLPatternLibrary;
 import org.finos.legend.pure.m3.tools.forkjoin.ForkJoinTools;
-import org.finos.legend.pure.m4.coreinstance.CoreInstance;
 import org.finos.legend.pure.m4.ModelRepository;
+import org.finos.legend.pure.m4.coreinstance.CoreInstance;
 import org.finos.legend.pure.m4.coreinstance.SourceInformation;
 import org.finos.legend.pure.m4.serialization.binary.BinaryReaders;
 
+import java.net.URL;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.RecursiveTask;
 
@@ -80,24 +80,6 @@ public class GraphLoader
     private static final int RESOLVE_REFERENCES_THRESHOLD = 1000;
     private static final int POPULATE_BACK_REFERENCES_THRESHOLD = 1000;
     private static final int UPDATE_CONTEXT_THRESHOLD = 10_000;
-
-    private static final Function<String, String> CONVERT_TO_BINARY_PATH = new Function<String, String>()
-    {
-        @Override
-        public String valueOf(String path)
-        {
-            return CodeStorageTools.isPureFilePath(path) ? PureRepositoryJarTools.purePathToBinaryPath(path) : path;
-        }
-    };
-
-    private final Predicate<String> fileIsLoaded = new Predicate<String>()
-    {
-        @Override
-        public boolean accept(String file)
-        {
-            return GraphLoader.this.loadedFiles.contains(file);
-        }
-    };
 
     private final ModelRepository repository;
     private final Context context;
@@ -137,9 +119,13 @@ public class GraphLoader
     {
         if (message != null)
         {
-            message.setMessage("Reading files ...");
+            message.setMessage("    Reading all files ...");
         }
-        MapIterable<String, byte[]> fileBytes = this.loadedFiles.isEmpty() ? this.jarLibrary.readAllFiles() : this.jarLibrary.readFiles(this.jarLibrary.getAllFiles().reject(this.fileIsLoaded));
+        MapIterable<String, byte[]> fileBytes = this.loadedFiles.isEmpty() ? this.jarLibrary.readAllFiles() : this.jarLibrary.readFiles(this.jarLibrary.getAllFiles().reject(this::fileIsLoaded));
+        if (message != null)
+        {
+            message.setMessage(String.format("    Reading all (%,d) files ...", fileBytes.size()));
+        }
         loadFileBytes(fileBytes, message);
     }
 
@@ -155,6 +141,10 @@ public class GraphLoader
 
     public void loadRepository(String repositoryName, Message message)
     {
+        if (message != null)
+        {
+            message.setMessage("  Loading '" + repositoryName + "' from PAR with " + this.jarLibrary.getFileDependencies(this.jarLibrary.getRepositoryFiles(repositoryName)).size() + " dependencies");
+        }
         loadFiles_internal(this.jarLibrary.getFileDependencies(this.jarLibrary.getRepositoryFiles(repositoryName)), message);
     }
 
@@ -186,7 +176,7 @@ public class GraphLoader
 
     public void loadFile(String path, Message message)
     {
-        loadFiles_internal(this.jarLibrary.getFileDependencies(CONVERT_TO_BINARY_PATH.valueOf(path)), message);
+        loadFiles_internal(this.jarLibrary.getFileDependencies(convertToBinaryPath(path)), message);
     }
 
     public void loadFiles(Iterable<String> paths)
@@ -196,7 +186,7 @@ public class GraphLoader
 
     public void loadFiles(Iterable<String> paths, Message message)
     {
-        loadFiles_internal(this.jarLibrary.getFileDependencies(LazyIterate.collect(paths, CONVERT_TO_BINARY_PATH)), message);
+        loadFiles_internal(this.jarLibrary.getFileDependencies(LazyIterate.collect(paths, GraphLoader::convertToBinaryPath)), message);
     }
 
     public void loadDirectoryFiles(String directory)
@@ -239,13 +229,18 @@ public class GraphLoader
         return this.loadedFiles.asUnmodifiable();
     }
 
+    private boolean fileIsLoaded(String file)
+    {
+        return this.loadedFiles.contains(file);
+    }
+
     private void loadFiles_internal(SetIterable<String> files, Message message)
     {
         if (message != null)
         {
-            message.setMessage("Reading files ...");
+            message.setMessage(String.format("    Reading %,d files ...", + files.size()));
         }
-        MapIterable<String, byte[]> fileBytes = this.jarLibrary.readFiles(LazyIterate.reject(files, this.fileIsLoaded));
+        MapIterable<String, byte[]> fileBytes = this.jarLibrary.readFiles(LazyIterate.reject(files, this::fileIsLoaded));
         loadFileBytes(fileBytes, message);
     }
 
@@ -264,26 +259,19 @@ public class GraphLoader
         int fileCount = fileBytes.size();
         if (message != null)
         {
-            message.setMessage(String.format("Deserializing %,d files ...", fileCount));
+            message.setMessage(String.format("    Deserializing %,d files ...", fileCount));
         }
         final ExternalReferenceSerializerLibrary serializerLibrary = ExternalReferenceSerializerLibrary.newLibrary(this.parserLibrary);
         final ReferenceFactory referenceFactory = CachedReferenceFactory.wrap(new SimpleReferenceFactory());
-        Function<byte[], SourceDeserializationResult> deserialize = new Function<byte[], SourceDeserializationResult>()
-        {
-            @Override
-            public SourceDeserializationResult valueOf(byte[] sourceBytes)
-            {
-                return BinaryModelSourceDeserializer.deserialize(BinaryReaders.newBinaryReader(sourceBytes), serializerLibrary, referenceFactory, true, false, false);
-            }
-        };
+        Function<byte[], SourceDeserializationResult> deserialize = sourceBytes -> BinaryModelSourceDeserializer.deserialize(BinaryReaders.newBinaryReader(sourceBytes), serializerLibrary, referenceFactory, true, false, false);
         ListIterable<SourceDeserializationResult> results;
         if (shouldParallelize(fileCount, DESERIALIZE_FILES_THRESHOLD))
         {
-            results = ForkJoinTools.collect(this.forkJoinPool, FastList.<byte[]>newList(fileCount).withAll(fileBytes.valuesView()), deserialize, DESERIALIZE_FILES_THRESHOLD);
+            results = ForkJoinTools.collect(this.forkJoinPool, Lists.mutable.<byte[]>withInitialCapacity(fileCount).withAll(fileBytes.valuesView()), deserialize, DESERIALIZE_FILES_THRESHOLD);
         }
         else
         {
-            results = fileBytes.valuesView().collect(deserialize, FastList.<SourceDeserializationResult>newList(fileCount));
+            results = fileBytes.valuesView().collect(deserialize, Lists.mutable.withInitialCapacity(fileCount));
         }
         return results;
     }
@@ -294,7 +282,7 @@ public class GraphLoader
         initializeNodes(nodes, message);
         resolveReferences(nodes, message);
 
-        ListIterable<CoreInstance> instances = nodes.collect(DeserializationNode.GET_INSTANCE);
+        ListIterable<CoreInstance> instances = nodes.collect(DeserializationNode::getInstance);
         populateBackReferences(instances, message);
         updateContext(instances, message);
         updateSourceRegistry(results, nodes, message);
@@ -305,7 +293,7 @@ public class GraphLoader
     {
         if (message != null)
         {
-            message.setMessage(String.format("Initializing %,d nodes ...", nodes.size()));
+            message.setMessage(String.format("    Initializing %,d nodes ...", nodes.size()));
         }
         for (DeserializationNode node : nodes)
         {
@@ -314,24 +302,21 @@ public class GraphLoader
                 node.initializeInstance(this.repository, this.processorSupport);
             }
         }
-        Procedure<DeserializationNode> initializeNonTopLevel = new Procedure<DeserializationNode>()
-        {
-            @Override
-            public void value(DeserializationNode node)
-            {
-                if (!node.isTopLevel())
-                {
-                    node.initializeInstance(GraphLoader.this.repository, GraphLoader.this.processorSupport);
-                }
-            }
-        };
         if (shouldParallelize(nodes.size(), INITIALIZE_NODES_THRESHOLD))
         {
-            ForkJoinTools.forEach(this.forkJoinPool, nodes, initializeNonTopLevel, INITIALIZE_NODES_THRESHOLD);
+            ForkJoinTools.forEach(this.forkJoinPool, nodes, this::initializeNonTopLevelNode, INITIALIZE_NODES_THRESHOLD);
         }
         else
         {
-            nodes.forEach(initializeNonTopLevel);
+            nodes.forEach(this::initializeNonTopLevelNode);
+        }
+    }
+
+    private void initializeNonTopLevelNode(DeserializationNode node)
+    {
+        if (!node.isTopLevel())
+        {
+            node.initializeInstance(this.repository, this.processorSupport);
         }
     }
 
@@ -341,7 +326,7 @@ public class GraphLoader
         {
             if (message != null)
             {
-                message.setMessage("Resolving references, pass " + passCount + " ...");
+                message.setMessage("    Resolving references, pass " + passCount + " ...");
             }
             int newlyResolvedCount;
             int unresolvedCount;
@@ -352,7 +337,7 @@ public class GraphLoader
                 unresolvedCount = resolutionResult.getUnresolved();
                 if (newlyResolvedCount > 0)
                 {
-                    ForkJoinTools.forEach(this.forkJoinPool, nodes, DeserializationNode.POPULATE_RESOLVED_PROPERTIES, RESOLVE_REFERENCES_THRESHOLD);
+                    ForkJoinTools.forEach(this.forkJoinPool, nodes, DeserializationNode::populateResolvedProperties, RESOLVE_REFERENCES_THRESHOLD);
                 }
             }
             else
@@ -378,7 +363,7 @@ public class GraphLoader
                 StringBuilder errorMessage = new StringBuilder("Failed to resolve nodes after ");
                 errorMessage.append(passCount);
                 errorMessage.append(" passes; ");
-                MutableList<Reference> unresolved = FastList.newList(unresolvedCount);
+                MutableList<Reference> unresolved = Lists.mutable.withInitialCapacity(unresolvedCount);
                 for (DeserializationNode node : nodes)
                 {
                     node.collectUnresolvedReferences(unresolved);
@@ -434,10 +419,10 @@ public class GraphLoader
     {
         if (message != null)
         {
-            message.setMessage("Populating reverse references ...");
+            message.setMessage("    Populating reverse references (" + instances.size() + " instances)...");
         }
 
-        MapIterable<CoreInstance, RichIterable<Processor>> processorsByType = getProcessorsByType();
+        MapIterable<CoreInstance, ? extends ListIterable<Processor>> processorsByType = getProcessorsByType();
 
         CoreInstance annotatedElementClass = getByUserPath(M3Paths.AnnotatedElement);
         CoreInstance associationClass = getByUserPath(M3Paths.Association);
@@ -457,39 +442,36 @@ public class GraphLoader
         }
     }
 
-    private MapIterable<CoreInstance, RichIterable<Processor>> getProcessorsByType()
+    private MapIterable<CoreInstance, ? extends ListIterable<Processor>> getProcessorsByType()
     {
-        MutableListMultimap<CoreInstance, Processor> processorsByType = Multimaps.mutable.list.empty();
+        MutableMap<CoreInstance, MutableList<Processor>> processorsByType = Maps.mutable.empty();
         RichIterable<Processor> processors = LazyIterate.concatenate(
-                this.parserLibrary.getParsers().asLazy().flatCollect(Parser.GET_PROCESSORS),
-                this.inlineDSLLibrary.getInlineDSLs().asLazy().flatCollect(InlineDSL.GET_PROCESSORS)).selectInstancesOf(Processor.class);
+                this.parserLibrary.getParsers().asLazy().flatCollect(Parser::getProcessors),
+                this.inlineDSLLibrary.getInlineDSLs().asLazy().flatCollect(InlineDSL::getProcessors))
+                .selectInstancesOf(Processor.class);
         for (Processor processor : processors)
         {
             CoreInstance type = getByUserPath(processor.getClassName());
             // Type may not be loaded yet, and that is ok.
             if (type != null)
             {
-                processorsByType.put(type, processor);
+                processorsByType.getIfAbsentPut(type, Lists.mutable::empty).add(processor);
             }
         }
-        return processorsByType.toMap();
+        return processorsByType;
     }
 
     private void updateContext(ListIterable<CoreInstance> instances, Message message)
     {
         if (message != null)
         {
-            message.setMessage("Updating context ...");
+            message.setMessage("    Updating context ...");
         }
-        Procedure<CoreInstance> updateContextForInstance = new Procedure<CoreInstance>()
+        Procedure<CoreInstance> updateContextForInstance = instance ->
         {
-            @Override
-            public void value(CoreInstance instance)
-            {
-                GraphLoader.this.context.update(instance);
-                GraphLoader.this.context.registerInstanceByClassifier(instance);
-                GraphLoader.this.context.registerFunctionByName(instance);
-            }
+            this.context.update(instance);
+            this.context.registerInstanceByClassifier(instance);
+            this.context.registerFunctionByName(instance);
         };
         if (shouldParallelize(instances.size(), UPDATE_CONTEXT_THRESHOLD))
         {
@@ -505,7 +487,7 @@ public class GraphLoader
     {
         if (message != null)
         {
-            message.setMessage("Updating source registry ...");
+            message.setMessage("    Updating source registry ...");
         }
 
         // Index top level and packaged instances by path
@@ -524,25 +506,21 @@ public class GraphLoader
         for (SourceDeserializationResult result : results)
         {
             final MutableListMultimap<Parser, CoreInstance> instancesByParser = Multimaps.mutable.list.empty();
-            result.getInstancesByParser().forEachKeyMultiValues(new Procedure2<String, Iterable<String>>()
+            result.getInstancesByParser().forEachKeyMultiValues((parserName, instancePaths) ->
             {
-                @Override
-                public void value(String parserName, Iterable<String> instancePaths)
+                Parser parser = this.parserLibrary.getParser(parserName);
+                if (parser == null)
                 {
-                    Parser parser = GraphLoader.this.parserLibrary.getParser(parserName);
-                    if (parser == null)
+                    throw new RuntimeException("Could not find parser: " + parserName);
+                }
+                for (String instancePath : instancePaths)
+                {
+                    CoreInstance instance = instancesByPath.get(instancePath);
+                    if (instance == null)
                     {
-                        throw new RuntimeException("Could not find parser: " + parserName);
+                        throw new RuntimeException("Could not find instance: " + instancePath);
                     }
-                    for (String instancePath : instancePaths)
-                    {
-                        CoreInstance instance = instancesByPath.get(instancePath);
-                        if (instance == null)
-                        {
-                            throw new RuntimeException("Could not find instance: " + instancePath);
-                        }
-                        instancesByParser.put(parser, instance);
-                    }
+                    instancesByParser.put(parser, instance);
                 }
             });
 
@@ -557,7 +535,7 @@ public class GraphLoader
     {
         if (message != null)
         {
-            message.setMessage("Updating pattern library ...");
+            message.setMessage("    Updating pattern library ...");
         }
 
         if (this.patternLibrary != null)
@@ -581,6 +559,11 @@ public class GraphLoader
     private boolean shouldParallelize(int size, int threshold)
     {
         return (this.forkJoinPool != null) && (size > threshold);
+    }
+
+    private static String convertToBinaryPath(String path)
+    {
+        return CodeStorageTools.isPureFilePath(path) ? PureRepositoryJarTools.purePathToBinaryPath(path) : path;
     }
 
     private static class RecursiveResolveReferencesTask extends RecursiveTask<ReferenceResolutionResult>
@@ -639,7 +622,7 @@ public class GraphLoader
         private final ModelRepository repository;
         private final Context context;
         private final ProcessorSupport processorSupport;
-        private final MapIterable<CoreInstance, RichIterable<Processor>> processorsByType;
+        private final MapIterable<CoreInstance, ? extends ListIterable<Processor>> processorsByType;
         private final CoreInstance annotatedElementClass;
         private final CoreInstance associationClass;
         private final CoreInstance functionDefinitionClass;
@@ -647,7 +630,7 @@ public class GraphLoader
         private final CoreInstance newPropertyRouteNodeFunctionDefinition;
         private final CoreInstance typeClass;
 
-        private BackReferencePopulator(ModelRepository repository, Context context, ProcessorSupport processorSupport, MapIterable<CoreInstance, RichIterable<Processor>> processorsByType, CoreInstance annotatedElementClass, CoreInstance associationClass, CoreInstance functionDefinitionClass, CoreInstance functionExpressionClass, CoreInstance newPropertyRouteNodeFunctionDefinition, CoreInstance typeClass)
+        private BackReferencePopulator(ModelRepository repository, Context context, ProcessorSupport processorSupport, MapIterable<CoreInstance, ? extends ListIterable<Processor>> processorsByType, CoreInstance annotatedElementClass, CoreInstance associationClass, CoreInstance functionDefinitionClass, CoreInstance functionExpressionClass, CoreInstance newPropertyRouteNodeFunctionDefinition, CoreInstance typeClass)
         {
             this.repository = repository;
             this.context = context;
@@ -704,7 +687,7 @@ public class GraphLoader
                 // specializations
                 if (genlsSet.contains(this.typeClass))
                 {
-                    SpecializationProcessor.process((org.finos.legend.pure.m3.coreinstance.meta.pure.metamodel.type.Type)instance, this.processorSupport);
+                    SpecializationProcessor.process((org.finos.legend.pure.m3.coreinstance.meta.pure.metamodel.type.Type) instance, this.processorSupport);
                 }
 
                 // referenceUsages_GenericType
@@ -713,7 +696,7 @@ public class GraphLoader
                 {
                     for (CoreInstance type : genlsList.asReversed())
                     {
-                        RichIterable<Processor> processors = this.processorsByType.get(type);
+                        ListIterable<Processor> processors = this.processorsByType.get(type);
                         if (processors != null)
                         {
                             for (Processor processor : processors)
@@ -725,7 +708,7 @@ public class GraphLoader
                     // TODO find a better way to do this
                     if (genlsSet.contains(this.functionDefinitionClass) && !genlsSet.contains(this.newPropertyRouteNodeFunctionDefinition))
                     {
-                        GenericTypeTraceability.addTraceForFunctionDefinition((FunctionDefinition)instance, this.repository, this.processorSupport);
+                        GenericTypeTraceability.addTraceForFunctionDefinition((FunctionDefinition<?>) instance, this.repository, this.processorSupport);
                     }
                 }
             }
@@ -743,5 +726,22 @@ public class GraphLoader
                 throw new RuntimeException(errorMessage.toString(), e);
             }
         }
+    }
+
+    public static MutableList<PureRepositoryJar> findJars(MutableList<String> repoNames, ClassLoader classLoader, Message message)
+    {
+        MutableList<PureRepositoryJar> jars = Lists.mutable.withInitialCapacity(repoNames.size());
+        for (String repoName : repoNames)
+        {
+            String resourceName = "pure-" + repoName + ".par";
+            URL url = classLoader.getResource(resourceName);
+            if (url == null)
+            {
+                throw new RuntimeException("Could not find resource: " + resourceName);
+            }
+            message.setMessage("  Found " + resourceName + " at " + url);
+            jars.add(PureRepositoryJars.get(url));
+        }
+        return jars;
     }
 }

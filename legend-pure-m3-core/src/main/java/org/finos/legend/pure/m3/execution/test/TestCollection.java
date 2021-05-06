@@ -568,12 +568,25 @@ public class TestCollection
 
     public static Predicate<? super CoreInstance> getFilterPredicateForAlloyExclusion(final ProcessorSupport processorSupport)
     {
-        return (Predicate<? super CoreInstance>)(System.getProperty("alloy.test.server.host") != null ? new Predicate<CoreInstance>()
+        return (Predicate<? super CoreInstance>)(System.getProperty("alloy.test.server.host") != null || System.getProperty("legend.test.server.host") != null ? new Predicate<CoreInstance>()
         {
             @Override
             public boolean accept(CoreInstance coreInstance)
             {
                 return !TestTools.hasExcludeAlloyStereotype(coreInstance, processorSupport);
+            }
+        } : DEFAULT_FILTER_PREDICATE);
+    }
+
+    public static Predicate<? super CoreInstance> getFilterPredicateForAlloyTextModeExclusion(final ProcessorSupport processorSupport)
+    {
+        return (Predicate<? super CoreInstance>)(System.getProperty("legend.test.serializationKind").equals("text") &&
+                (System.getProperty("alloy.test.server.host") != null || System.getProperty("legend.test.server.host") != null) ? new Predicate<CoreInstance>()
+        {
+            @Override
+            public boolean accept(CoreInstance coreInstance)
+            {
+                return  !TestTools.hasExcludeAlloyTextModeStereotype(coreInstance, processorSupport);
             }
         } : DEFAULT_FILTER_PREDICATE);
     }
